@@ -1,0 +1,14 @@
+# Data files (large tick-level NBBO CSVs)
+data/
+nbbo_data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db

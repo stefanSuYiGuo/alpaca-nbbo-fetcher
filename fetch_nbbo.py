@@ -5,11 +5,21 @@ during regular trading hours (09:30-16:00 America/New_York)
 and save to CSV.
 
 Data is tick-level (every quote update), not minute bars.
+
+Output structure:
+  data/
+    AAPL/
+      2026-06-01.csv
+      2026-06-02.csv
+      ...
+    SPY/
+      ...
 """
 
 import os
 import sys
-from datetime import datetime, time
+import time
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -20,16 +30,28 @@ from alpaca.data.enums import DataFeed
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-SYMBOLS = ["AAPL", "MSFT", "SPY"]  # edit this list
+SYMBOLS = [
+    # Large-cap stocks
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
+    # Broad ETFs
+    "SPY", "QQQ", "IWM", "DIA", "VTI", "VOO",
+    # Leveraged / inverse ETFs
+    "TQQQ", "SQQQ", "SOXL", "SOXS", "UPRO", "SPXU",
+    "TNA", "TZA", "FAS", "FAZ", "LABU", "LABD",
+]
 START_DATE = "2026-06-01"
 END_DATE = "2026-11-19"
-OUTPUT_DIR = "nbbo_data"
+OUTPUT_DIR = "data"
 FEED = DataFeed.SIP
 
 # Regular trading hours (ET)
-MARKET_OPEN = time(9, 30)
-MARKET_CLOSE = time(16, 0)
+MARKET_OPEN = dtime(9, 30)
+MARKET_CLOSE = dtime(16, 0)
 ET = ZoneInfo("America/New_York")
+
+# Rate-limit / retry settings (free tier is 200 req/min)
+MAX_RETRIES = 5
+BASE_SLEEP = 0.4  # seconds between requests to stay under 200/min
 
 # ---------------------------------------------------------------------------
 def get_client() -> StockHistoricalDataClient:
@@ -41,73 +63,100 @@ def get_client() -> StockHistoricalDataClient:
     return StockHistoricalDataClient(api_key=key, secret_key=secret)
 
 
-def trading_days(start: str, end: str):
-    """Yield each calendar date in range (inclusive). Caller filters weekends/holidays."""
-    current = datetime.fromisoformat(start).date()
-    last = datetime.fromisoformat(end).date()
-    while current <= last:
-        yield current
-        current = current.replace(day=current.day + 1) if current.day < 28 else current.replace(month=current.month + 1, day=1) if current.month < 12 else current.replace(year=current.year + 1, month=1, day=1)
-        # simpler:
-    # better way below in actual loop
+def fetch_with_retry(client, request, max_retries=MAX_RETRIES):
+    """Fetch quotes with exponential backoff on rate-limit or transient errors."""
+    for attempt in range(max_retries):
+        try:
+            return client.get_stock_quotes(request)
+        except Exception as e:
+            msg = str(e).lower()
+            if "429" in msg or "too many" in msg or "rate" in msg or "timeout" in msg:
+                sleep_time = BASE_SLEEP * (2 ** attempt) + 1
+                print(f"    Rate limited / transient error, sleeping {sleep_time:.1f}s (attempt {attempt+1})")
+                time.sleep(sleep_time)
+                continue
+            raise
+    raise RuntimeError(f"Failed after {max_retries} retries")
 
 
 def main():
     client = get_client()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    start_dt = datetime.fromisoformat(START_DATE)
-    end_dt = datetime.fromisoformat(END_DATE)
+    start_date = datetime.fromisoformat(START_DATE).date()
+    end_date = datetime.fromisoformat(END_DATE).date()
 
     for symbol in SYMBOLS:
-        print(f"Fetching {symbol} ...")
-        all_rows = []
+        symbol_dir = os.path.join(OUTPUT_DIR, symbol)
+        os.makedirs(symbol_dir, exist_ok=True)
+        print(f"\n=== {symbol} ===")
 
-        # Iterate day by day to keep requests manageable and stay within free-tier constraints
-        current = start_dt.date()
-        end_date = end_dt.date()
-
+        current = start_date
         while current <= end_date:
-            # Skip weekends
-            if current.weekday() >= 5:
-                current = current.fromordinal(current.toordinal() + 1)
+            if current.weekday() >= 5:  # weekend
+                current += timedelta(days=1)
+                continue
+
+            day_str = current.isoformat()
+            outfile = os.path.join(symbol_dir, f"{day_str}.csv")
+
+            if os.path.exists(outfile):
+                print(f"  {day_str}: already exists, skipping")
+                current += timedelta(days=1)
                 continue
 
             day_start = datetime.combine(current, MARKET_OPEN, tzinfo=ET)
             day_end = datetime.combine(current, MARKET_CLOSE, tzinfo=ET)
 
-            request = StockQuotesRequest(
-                symbol_or_symbols=symbol,
-                start=day_start,
-                end=day_end,
-                feed=FEED,
-                limit=10000,
-            )
+            all_pages = []
+            page_token = None
+            page_num = 0
 
-            try:
-                quotes = client.get_stock_quotes(request)
-                if quotes and hasattr(quotes, "df") and not quotes.df.empty:
-                    df = quotes.df.reset_index()
-                    # Keep only relevant columns
-                    keep = [c for c in ["timestamp", "symbol", "bid_price", "bid_size", "ask_price", "ask_size", "bid_exchange", "ask_exchange"] if c in df.columns]
-                    all_rows.append(df[keep])
-                    print(f"  {current}: {len(df)} quotes")
-                else:
-                    print(f"  {current}: no data")
-            except Exception as e:
-                print(f"  {current}: error - {e}")
+            while True:
+                request = StockQuotesRequest(
+                    symbol_or_symbols=symbol,
+                    start=day_start,
+                    end=day_end,
+                    feed=FEED,
+                    limit=10000,
+                    page_token=page_token,
+                )
 
-            current = current.fromordinal(current.toordinal() + 1)
+                try:
+                    quotes = fetch_with_retry(client, request)
+                except Exception as e:
+                    print(f"  {day_str}: error - {e}")
+                    break
 
-        if all_rows:
-            result = pd.concat(all_rows, ignore_index=True)
-            outfile = os.path.join(OUTPUT_DIR, f"{symbol}_nbbo_{START_DATE}_to_{END_DATE}.csv")
-            result.to_csv(outfile, index=False)
-            print(f"Saved {len(result)} rows to {outfile}")
-        else:
-            print(f"No data for {symbol}")
+                if not quotes or not hasattr(quotes, "df") or quotes.df.empty:
+                    if page_num == 0:
+                        print(f"  {day_str}: no data")
+                    break
 
-    print("Done.")
+                df = quotes.df.reset_index()
+                keep = [c for c in [
+                    "timestamp", "symbol", "bid_price", "bid_size",
+                    "ask_price", "ask_size", "bid_exchange", "ask_exchange"
+                ] if c in df.columns]
+                all_pages.append(df[keep])
+                page_num += 1
+
+                # Pagination
+                next_token = getattr(quotes, "next_page_token", None)
+                if not next_token:
+                    break
+                page_token = next_token
+                time.sleep(BASE_SLEEP)
+
+            if all_pages:
+                result = pd.concat(all_pages, ignore_index=True)
+                result.to_csv(outfile, index=False)
+                print(f"  {day_str}: {len(result)} quotes -> {outfile}")
+
+            time.sleep(BASE_SLEEP)
+            current += timedelta(days=1)
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":

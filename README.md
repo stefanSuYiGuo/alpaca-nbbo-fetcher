@@ -5,7 +5,31 @@ Python script that downloads historical SIP National Best Bid and Offer (NBBO) q
 ## Data granularity
 
 The script requests **tick-level quotes** (every NBBO update) via the Alpaca historical quotes endpoint with `feed=sip`.  
-This is **not** minute-bar data. For liquid symbols you can easily receive tens of thousands of rows per trading minute.
+This is **not** minute-bar data. For liquid symbols you can easily receive tens of thousands of rows per trading minute, and hundreds of thousands per day.
+
+## Output structure
+
+```
+data/
+  AAPL/
+    2026-06-01.csv
+    2026-06-02.csv
+    ...
+  SPY/
+    ...
+  TQQQ/
+    ...
+```
+
+Each CSV contains one trading day's tick-level NBBO quotes for that symbol.
+
+## Rate limits
+
+Alpaca free (Basic) plan is limited to **200 requests per minute** for market data.  
+The script includes:
+- Small delay between requests
+- Exponential backoff + retry on 429 / rate-limit errors
+- Skips days that already have a CSV (resume-friendly)
 
 ## Requirements
 
@@ -33,14 +57,12 @@ Edit the `SYMBOLS`, `START_DATE` and `END_DATE` constants at the top of `fetch_n
 python fetch_nbbo.py
 ```
 
-CSV files are written to the `nbbo_data/` directory (one file per symbol).
-
 ## Notes
 
 - Free Alpaca accounts can access historical SIP data older than 15 minutes.
 - The script iterates day-by-day and only requests regular hours (09:30–16:00 America/New_York).
 - Weekends are skipped. Holidays are not specially filtered (Alpaca will simply return no data).
-- Rate limits apply; the script prints progress per day.
+- Data files are excluded from git via `.gitignore` (GitHub free repos have soft size limits; tick data is too large to commit).
 
 ## License
 

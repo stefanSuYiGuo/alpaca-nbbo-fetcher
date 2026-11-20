@@ -9,8 +9,8 @@ Data is tick-level (every quote update), not minute bars.
 Output structure:
   data/
     AAPL/
-      2026-06-01.csv
-      2026-06-02.csv
+      AAPL_2026_06_01.csv
+      AAPL_2026_06_02.csv
       ...
     SPY/
       ...
@@ -98,7 +98,8 @@ def main():
                 continue
 
             day_str = current.isoformat()
-            outfile = os.path.join(symbol_dir, f"{day_str}.csv")
+            filename = f"{symbol}_{day_str.replace('-', '_')}.csv"
+            outfile = os.path.join(symbol_dir, filename)
 
             if os.path.exists(outfile):
                 print(f"  {day_str}: already exists, skipping")

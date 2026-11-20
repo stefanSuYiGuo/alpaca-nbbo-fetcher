@@ -12,10 +12,11 @@ This is **not** minute-bar data. For liquid symbols you can easily receive tens 
 ```
 data/
   AAPL/
-    2026-06-01.csv
-    2026-06-02.csv
+    AAPL_2026_06_01.csv
+    AAPL_2026_06_02.csv
     ...
   SPY/
+    SPY_2026_06_01.csv
     ...
   TQQQ/
     ...
